@@ -107,7 +107,7 @@ def _parse_cmd_args():
     parser.add_argument('port', type=int, help='The port on which to send the message.')
     parser.add_argument('message', type=str, help='The port on which to send the message.')
 
-    parser.add_argument('--verbose', '-v', action='count', default=3, help='Verbosity level. By default only warnings '
+    parser.add_argument('--verbose', '-v', action='count', default=0, help='Verbosity level. By default only warnings '
                                                                            'and errors are printed.')
 
     parser.add_argument('--serial-device', default='/dev/ttyAMA0', type=str,
