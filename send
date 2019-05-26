@@ -3,9 +3,16 @@ import argparse
 import logging
 import re
 import time
+import json
+# import sqlite3
+from datetime import datetime
 
 import serial
 
+# sqlite_con = sqlite3.connect('./data/test.db')
+# cur = sqlite_con.cursor()
+# cur.execute('create table if not exists ping (start, end, content)')
+# sqlite_con.commit()
 
 def run():
     args = _parse_cmd_args()
@@ -14,7 +21,7 @@ def run():
     _setup_logging(verbosity_level)
 
     ser = serial.Serial(
-        port='/dev/ttyAMA0',
+        port=args.serial_device,
         baudrate=args.baud_rate,
         parity=serial.PARITY_NONE,
         stopbits=serial.STOPBITS_ONE,
@@ -22,38 +29,86 @@ def run():
         timeout=1
     )
 
-    # Instructions: https://vsblogs.wordpress.com/2013/11/28/tcp-connection-over-gprs-using-sim900-and-at-commands/
-
-    ser_write(ser, b'AT+CIPSHUT\n')
-    wait_until(ser, b'SHUT OK\r\n')
-
-    ser_write(ser, b'AT+CIPMUX=0\n')
+    ser_write(ser, b'AT\r\n')
     wait_until(ser, b'OK\r\n')
 
-    ser_write(ser, format_bytes('AT+CSTT="{apn_name}","{apn_username}","{apn_password}"\n',
+    # Instructions: https://vsblogs.wordpress.com/2013/11/28/tcp-connection-over-gprs-using-sim900-and-at-commands/
+
+    ser_write(ser, b'AT+CIPSHUT\r\n')
+    wait_until(ser, b'SHUT OK\r\n')
+
+    ser_write(ser, b'AT+CIPMUX=0\r\n')
+    wait_until(ser, b'OK\r\n')
+
+    ser_write(ser, format_bytes('AT+CSTT="{apn_name}","{apn_username}","{apn_password}"\r\n',
                                 apn_name=args.apn_name, apn_username=args.apn_username, apn_password=args.apn_password))
     wait_until(ser, b'OK\r\n')
 
-    ser_write(ser, b'AT+CIICR\n')
+    ser_write(ser, b'AT+CIICR\r\n')
     wait_until(ser, b'OK\r\n')
 
     # This seems to be necessary.
-    ser_write(ser, b'AT+CIFSR\n')
+    ser_write(ser, b'AT+CIFSR\r\n')
     wait_until_pattern(ser, r'\d{1,3}.\d{1,3}.\d{1,3}')
 
-    ser_write(ser, format_bytes('AT+CIPSTART="TCP","{host}","{port}"\n', host=args.host, port=args.port))
-    time.sleep(10)
-    wait_until(ser, b'CONNECT OK\r\n')
+    i = 1
+    while True:
+        print('Request: %d - time %s' % (i, time.ctime()))
+        i = i + 1
 
-    ser_write(ser, b'AT+CIPSEND\n')
-    wait_until(ser, b'> ')
+        date_start = datetime.now()
+        ser_write(ser, format_bytes('AT+CIPSTART="TCP","{host}","{port}"\r\n', host=args.host, port=args.port))
+        wait_until(ser, b'CONNECT OK\r\n')
 
-    ser_write(ser, format_bytes('{message}\x1a', message=args.message))
-    wait_until(ser, b'SEND OK\r\n')
+        ser_write(ser, b'AT+CIPSEND\r\n')
+        wait_until(ser, b'> ')
 
-    ser_write(ser, b'AT+CIPSHUT\n')
-    wait_until(ser, b'SHUT OK\r\n')
+        ser_write(ser, b'GET / HTTP/1.0\r\n')
+        ser_write(ser, b'Host: 209.250.243.147:3000\r\n')
+        ser_write(ser, b'User-Agent: gsm-sim900\r\n')
+        ser_write(ser, b'\r\n')
+        ser_write(ser, b'\x1a')
 
+        # ser_write(ser, format_bytes('{message}\x1a', message=args.message))
+        wait_until(ser, b'SEND OK\r\n')
+
+        response = list()
+        while True:
+            row = ser_readline(ser)
+            response.append(row)
+            if b'CLOSED\r\n' == row:
+                break
+
+        date_end = datetime.now()
+
+        content = get_content(response)
+        print(json.loads(content))
+
+        ser_write(ser, b'AT+CIPSHUT\r\n')
+        wait_until(ser, b'SHUT OK\r\n')
+
+        # cur.execute("insert into ping values ('%s','%s','%s')" % (date_start, date_end, content))
+        # sqlite_con.commit()
+
+
+def get_content(response):
+    content = []
+    for row in response:
+        if b'CLOSED\r\n' == row:
+            break
+
+        if (b'\r\n' == row and len(content) == 0) or len(content) > 0:
+            content.append(row)
+
+    content = map(lambda s: s.decode('utf-8').strip(), content)
+    content = filter(lambda s: not re.match(r'^\s*$', s), content)
+
+    return ''.join(content)
+
+    # content = ''
+    # for row in response:
+    #     str = row.decode('utf-8')
+    #     print(str.replace('\r\n', ''))
 
 def format_bytes(text, **kwargs):
     return bytes(text.format(**kwargs), 'ASCII')
@@ -107,7 +162,7 @@ def _parse_cmd_args():
     parser.add_argument('port', type=int, help='The port on which to send the message.')
     parser.add_argument('message', type=str, help='The port on which to send the message.')
 
-    parser.add_argument('--verbose', '-v', action='count', default=0, help='Verbosity level. By default only warnings '
+    parser.add_argument('--verbose', '-v', action='count', default=1, help='Verbosity level. By default only warnings '
                                                                            'and errors are printed.')
 
     parser.add_argument('--serial-device', default='/dev/ttyAMA0', type=str,
@@ -116,7 +171,7 @@ def _parse_cmd_args():
                                                           'SIM900A module.')
 
     parser.add_argument('--apn-name', required=True, type=str, help='The name of your network\'s access point.')
-    parser.add_argument('--apn-username', required=True, type=str,
+    parser.add_argument('--apn-username', default="", type=str,
                         help='The username to use when connecting to your network\'s access point.')
     parser.add_argument('--apn-password', type=str, default="",
                         help='The password to use when connecting to your network\'s access point.')
